@@ -8,7 +8,10 @@ Nach der Löschung kann ein korrektes Asset problemlos neu importiert werden.
 
 ---
 
-<img width="1366" height="1401" alt="grafik" src="https://github.com/user-attachments/assets/16302a96-b732-47b0-a6f5-cef806539a2f" />
+## GUI
+
+<img width="1366" height="1401" alt="grafik" src="https://github.com/user-attachments/assets/457b8f87-1c4e-4429-91a3-692580a4ac0b" />
+
 
 ---
 
