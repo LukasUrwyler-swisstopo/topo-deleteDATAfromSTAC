@@ -18,16 +18,24 @@ from typing import Dict, List, Tuple
 GDWH_SSL_VERIFY: bool = False
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+GDWH_GDS_KEYS = [
+    "SB_DOP",
+    "SB_DOP_16",
+    "SB_DSM",
+    "SB_DSM_PUNKTWOLKE",
+]
+
 GDWH_ENVIRONMENTS = {
     "INT":  "https://ltgdwhi.adr.admin.ch/gdwh-api/v2/",
     "PROD": "https://ltgdwh.adr.admin.ch/gdwh-api/v2/",
 }
 
 
-def gdwh_get_imports(base_url: str, gds_key: str) -> List[Dict]:
-    """Holt alle DataPackages (Imports) für einen GDS-Key. Kein Auth erforderlich."""
+def gdwh_get_imports(base_url: str, gds_key: str,
+                     auth: Tuple = None) -> List[Dict]:
+    """Holt alle DataPackages (Imports) für einen GDS-Key. Auth optional."""
     url = f"{base_url}api/geodatasets/{gds_key}/data/imports"
-    r = requests.get(url, timeout=(30, 60), verify=GDWH_SSL_VERIFY)
+    r = requests.get(url, auth=auth, timeout=(30, 60), verify=GDWH_SSL_VERIFY)
     r.raise_for_status()
     data = r.json()
     # Antwort kann direkt eine Liste oder ein Wrapper-Objekt mit Liste sein

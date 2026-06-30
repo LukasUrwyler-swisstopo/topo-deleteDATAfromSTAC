@@ -196,8 +196,7 @@ Die Löschung ist **asynchron** — das GDWH startet einen Job und meldet den Ab
 - **INT** = Integrationsumgebung (`ltgdwhi.adr.admin.ch`)
 - **PROD** = Produktionsumgebung (`ltgdwh.adr.admin.ch`)
 
-**GET-Abfragen** (Imports laden) benötigen **keine Credentials**.  
-**DELETE** benötigt **AD-Credentials (Windows-Login)** — Benutzername und Passwort direkt im GUI eingeben.  
+**GET und DELETE** benötigen **AD-Credentials (Windows-Login)** — Benutzername und Passwort direkt im GUI eingeben.  
 Die Zugangsdaten werden nicht gespeichert.
 
 ---

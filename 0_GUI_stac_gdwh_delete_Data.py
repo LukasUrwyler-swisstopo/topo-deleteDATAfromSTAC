@@ -33,7 +33,7 @@ from stac_api import (
     delete_asset, delete_item, check_asset_status,
 )
 from gdwh_api import (
-    GDWH_ENVIRONMENTS,
+    GDWH_ENVIRONMENTS, GDWH_GDS_KEYS,
     gdwh_get_imports, gdwh_delete_import,
     gdwh_import_id, gdwh_import_name, gdwh_import_date, gdwh_import_status,
 )
@@ -650,8 +650,8 @@ class KryDeleteApp(tk.Tk):
 
         ttk.Label(
             sec,
-            text="AD-Login (Windows-Credentials)  —  werden nur für DELETE verwendet,\n"
-                 "nicht gespeichert. Imports laden (GET) funktioniert ohne Anmeldung.",
+            text="AD-Login (Windows-Credentials)  —  für GET und DELETE benötigt,\n"
+                 "nicht gespeichert.",
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
         ).grid(row=1, column=3, rowspan=2, sticky="w", padx=(16, 0), pady=(8, 0))
 
@@ -662,22 +662,18 @@ class KryDeleteApp(tk.Tk):
         sec.columnconfigure(1, weight=1)
 
         ttk.Label(sec, text="GDS-Key:").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self._gdwh_gds_key_var = tk.StringVar()
-        ttk.Entry(sec, textvariable=self._gdwh_gds_key_var, width=50).grid(
-            row=0, column=1, sticky="ew", padx=(0, 10))
+        self._gdwh_gds_key_var = tk.StringVar(value=GDWH_GDS_KEYS[0])
+        self._gdwh_gds_combo = ttk.Combobox(
+            sec, textvariable=self._gdwh_gds_key_var,
+            values=GDWH_GDS_KEYS, state="readonly", width=28,
+        )
+        self._gdwh_gds_combo.grid(row=0, column=1, sticky="w", padx=(0, 10))
 
         self._gdwh_fetch_btn = ttk.Button(
             sec, text="Imports laden",
             command=self._gdwh_fetch_imports, state="normal",
         )
         self._gdwh_fetch_btn.grid(row=0, column=2)
-
-        ttk.Label(
-            sec,
-            text="z.B.  ch.swisstopo.spezialbefliegungen-kry  —  "
-                 "entspricht dem GDS im GDWH Catalog",
-            font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
-        ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(3, 0))
 
     def _build_gdwh_step3(self, parent):
         sec = ttk.LabelFrame(parent, text="3   DataPackages auswählen zum Löschen",
@@ -1446,13 +1442,12 @@ class KryDeleteApp(tk.Tk):
         self._gdwh_preview_lbl.configure(text="Lade Imports …")
         self._gdwh_clear_list()
         threading.Thread(target=self._gdwh_fetch_worker,
-                         args=(gds_key,), daemon=True).start()
+                         args=(gds_key, self._gdwh_get_auth()), daemon=True).start()
 
-    def _gdwh_fetch_worker(self, gds_key: str):
+    def _gdwh_fetch_worker(self, gds_key: str, auth):
         try:
             self._gdwh_log_write(f"[GDWH] Lade Imports für GDS-Key: {gds_key} …\n")
-            # GET benötigt kein Auth
-            imports = gdwh_get_imports(self._gdwh_base_url, gds_key)
+            imports = gdwh_get_imports(self._gdwh_base_url, gds_key, auth)
             self._gdwh_imports = imports
             self._gdwh_log_write(f"[GDWH] {len(imports)} DataPackage(s) gefunden.\n")
             self.after(0, lambda: self._gdwh_populate_list(imports))
