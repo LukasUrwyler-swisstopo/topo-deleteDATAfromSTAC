@@ -618,12 +618,11 @@ class KryDeleteApp(tk.Tk):
     def _build_gdwh_step1(self, parent):
         sec = ttk.LabelFrame(
             parent,
-            text="1   Umgebung & AD-Credentials  (nur für Löschung benötigt)",
+            text="1   Umgebung",
             padding=10, style="Section.TLabelframe")
         sec.pack(fill="x", pady=(0, 6))
         sec.columnconfigure(3, weight=1)
 
-        # Umgebung
         ttk.Label(sec, text="Umgebung:").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._gdwh_env_var = tk.StringVar(value="INT")
         for col, env in enumerate(("INT", "PROD"), 1):
@@ -635,25 +634,11 @@ class KryDeleteApp(tk.Tk):
                                         font=("Segoe UI", 8), style="Dim.TLabel")
         self._gdwh_url_lbl.grid(row=0, column=3, sticky="w", padx=12)
 
-        # Benutzername + Passwort (AD, direkte Eingabe)
-        ttk.Label(sec, text="Benutzername:").grid(
-            row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        self._gdwh_user_var = tk.StringVar()
-        ttk.Entry(sec, textvariable=self._gdwh_user_var, width=24).grid(
-            row=1, column=1, columnspan=2, sticky="w", pady=(8, 0))
-
-        ttk.Label(sec, text="Passwort:").grid(
-            row=2, column=0, sticky="w", padx=(0, 8), pady=(4, 0))
-        self._gdwh_pass_var = tk.StringVar()
-        ttk.Entry(sec, textvariable=self._gdwh_pass_var, show="●", width=24).grid(
-            row=2, column=1, columnspan=2, sticky="w", pady=(4, 0))
-
         ttk.Label(
             sec,
-            text="AD-Login (Windows-Credentials)  —  für GET und DELETE benötigt,\n"
-                 "nicht gespeichert.",
+            text="Authentifizierung: Windows-Session (aktuell eingeloggter User, wie im Browser)",
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
-        ).grid(row=1, column=3, rowspan=2, sticky="w", padx=(16, 0), pady=(8, 0))
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
     def _build_gdwh_step2(self, parent):
         sec = ttk.LabelFrame(parent, text="2   GDS-Key & Imports laden",
@@ -1422,15 +1407,8 @@ class KryDeleteApp(tk.Tk):
         env = self._gdwh_env_var.get()
         self._gdwh_url_lbl.configure(text=GDWH_ENVIRONMENTS[env])
         self._gdwh_base_url = GDWH_ENVIRONMENTS[env]
-        # GET braucht kein Auth → Fetch-Button immer aktiv
         self._gdwh_fetch_btn.config(state="normal")
         self._apply_theme(self._dark)
-
-    def _gdwh_get_auth(self) -> Optional[Tuple]:
-        """AD-Credentials aus den Eingabefeldern. None wenn leer."""
-        user = self._gdwh_user_var.get().strip()
-        pwd  = self._gdwh_pass_var.get()
-        return (user, pwd) if user else None
 
     def _gdwh_fetch_imports(self):
         gds_key = self._gdwh_gds_key_var.get().strip()
@@ -1442,12 +1420,12 @@ class KryDeleteApp(tk.Tk):
         self._gdwh_preview_lbl.configure(text="Lade Imports …")
         self._gdwh_clear_list()
         threading.Thread(target=self._gdwh_fetch_worker,
-                         args=(gds_key, self._gdwh_get_auth()), daemon=True).start()
+                         args=(gds_key,), daemon=True).start()
 
-    def _gdwh_fetch_worker(self, gds_key: str, auth):
+    def _gdwh_fetch_worker(self, gds_key: str):
         try:
             self._gdwh_log_write(f"[GDWH] Lade Imports für GDS-Key: {gds_key} …\n")
-            imports = gdwh_get_imports(self._gdwh_base_url, gds_key, auth)
+            imports = gdwh_get_imports(self._gdwh_base_url, gds_key)
             self._gdwh_imports = imports
             self._gdwh_log_write(f"[GDWH] {len(imports)} DataPackage(s) gefunden.\n")
             self.after(0, lambda: self._gdwh_populate_list(imports))
@@ -1575,14 +1553,6 @@ class KryDeleteApp(tk.Tk):
             messagebox.showwarning("Nichts ausgewählt", "Keine DataPackages ausgewählt.")
             return
 
-        auth = self._gdwh_get_auth()
-        if auth is None:
-            messagebox.showwarning(
-                "Credentials fehlen",
-                "Bitte Benutzername und Passwort eingeben.\n"
-                "(AD-Credentials werden für die Löschung benötigt.)")
-            return
-
         gds_key = self._gdwh_gds_key_var.get().strip()
         env     = self._gdwh_env_var.get()
         email   = self._gdwh_email_var.get().strip()
@@ -1601,33 +1571,30 @@ class KryDeleteApp(tk.Tk):
 
         threading.Thread(
             target=self._gdwh_delete_worker,
-            args=(list(selected.keys()), gds_key, auth, email),
+            args=(list(selected.keys()), gds_key, email),
             daemon=True,
         ).start()
 
-    def _gdwh_delete_worker(self, pkg_ids: List[str], gds_key: str,
-                             auth: Tuple, email: str):
+    def _gdwh_delete_worker(self, pkg_ids: List[str], gds_key: str, email: str):
         ok_list   = []
         fail_list = []
         ts        = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         env       = self._gdwh_env_var.get()
-        user      = auth[0] if auth else "?"
 
         self._gdwh_log_write(
             f"\n{'='*60}\n[{ts}] GDWH LÖSCHUNG GESTARTET\n{'='*60}\n"
             f"Umgebung:   {env}\n"
             f"GDS-Key:    {gds_key}\n"
-            f"Benutzer:   {user}\n"
             f"Packages:   {len(pkg_ids)}\n"
             f"E-Mail:     {email or '(keine)'}\n\n"
         )
         self._file_logger.info(
-            f"[GDWH START] {env} | {gds_key} | User: {user} | Packages: {len(pkg_ids)}")
+            f"[GDWH START] {env} | {gds_key} | Packages: {len(pkg_ids)}")
 
         for i, pkg_id in enumerate(pkg_ids, 1):
             try:
                 job = gdwh_delete_import(
-                    self._gdwh_base_url, auth,
+                    self._gdwh_base_url,
                     gds_key, pkg_id, email)
                 job_id     = job.get("id", "?")
                 job_status = job.get("status", "gestartet")

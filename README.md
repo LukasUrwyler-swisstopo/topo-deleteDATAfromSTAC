@@ -191,13 +191,12 @@ Die Löschung ist **asynchron** — das GDWH startet einen Job und meldet den Ab
 
 ---
 
-### Schritt 1 — Umgebung & Credentials
+### Schritt 1 — Umgebung
 
 - **INT** = Integrationsumgebung (`ltgdwhi.adr.admin.ch`)
 - **PROD** = Produktionsumgebung (`ltgdwh.adr.admin.ch`)
 
-**GET und DELETE** benötigen **AD-Credentials (Windows-Login)** — Benutzername und Passwort direkt im GUI eingeben.  
-Die Zugangsdaten werden nicht gespeichert.
+Authentifizierung läuft automatisch über die **Windows-Session** (SSPI) — kein Benutzername/Passwort nötig, genau wie im Browser.
 
 ---
 
