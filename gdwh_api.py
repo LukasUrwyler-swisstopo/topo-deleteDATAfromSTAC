@@ -10,7 +10,13 @@ Swagger (INT): https://ltgdwhi.adr.admin.ch/gdwh-api/v2/swagger/index.html
 """
 
 import requests
+import urllib3
 from typing import Dict, List, Tuple
+
+# Interne Firmen-CA nicht im Python-Truststore → Verifikation deaktivieren.
+# Alternativ: GDWH_SSL_VERIFY = r"C:\pfad\zur\firma-ca.pem"
+GDWH_SSL_VERIFY: bool = False
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 GDWH_ENVIRONMENTS = {
     "INT":  "https://ltgdwhi.adr.admin.ch/gdwh-api/v2/",
@@ -21,7 +27,7 @@ GDWH_ENVIRONMENTS = {
 def gdwh_get_imports(base_url: str, gds_key: str) -> List[Dict]:
     """Holt alle DataPackages (Imports) für einen GDS-Key. Kein Auth erforderlich."""
     url = f"{base_url}api/geodatasets/{gds_key}/data/imports"
-    r = requests.get(url, timeout=(30, 60))
+    r = requests.get(url, timeout=(30, 60), verify=GDWH_SSL_VERIFY)
     r.raise_for_status()
     data = r.json()
     # Antwort kann direkt eine Liste oder ein Wrapper-Objekt mit Liste sein
@@ -42,7 +48,7 @@ def gdwh_delete_import(base_url: str, auth: Tuple, gds_key: str,
     """
     url = f"{base_url}api/geodatasets/{gds_key}/data/imports/{datapackage_id}"
     params = {"email": email} if email else None
-    r = requests.delete(url, auth=auth, params=params, timeout=(30, 120))
+    r = requests.delete(url, auth=auth, params=params, timeout=(30, 120), verify=GDWH_SSL_VERIFY)
     r.raise_for_status()
     try:
         return r.json()
