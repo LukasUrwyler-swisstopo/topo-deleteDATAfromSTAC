@@ -11,7 +11,8 @@ Swagger (INT): https://ltgdwhi.adr.admin.ch/gdwh-api/v2/swagger/index.html
 
 import requests
 import urllib3
-from typing import Dict, List, Tuple
+from requests_ntlm import HttpNtlmAuth
+from typing import Dict, List, Optional, Tuple
 
 # Interne Firmen-CA nicht im Python-Truststore → Verifikation deaktivieren.
 # Alternativ: GDWH_SSL_VERIFY = r"C:\pfad\zur\firma-ca.pem"
@@ -31,11 +32,16 @@ GDWH_ENVIRONMENTS = {
 }
 
 
+def _ntlm(auth: Optional[Tuple]) -> Optional[HttpNtlmAuth]:
+    """Konvertiert (user, pwd) zu HttpNtlmAuth. None bleibt None."""
+    return HttpNtlmAuth(*auth) if auth else None
+
+
 def gdwh_get_imports(base_url: str, gds_key: str,
                      auth: Tuple = None) -> List[Dict]:
     """Holt alle DataPackages (Imports) für einen GDS-Key. Auth optional."""
     url = f"{base_url}api/geodatasets/{gds_key}/data/imports"
-    r = requests.get(url, auth=auth, timeout=(30, 60), verify=GDWH_SSL_VERIFY)
+    r = requests.get(url, auth=_ntlm(auth), timeout=(30, 60), verify=GDWH_SSL_VERIFY)
     r.raise_for_status()
     data = r.json()
     # Antwort kann direkt eine Liste oder ein Wrapper-Objekt mit Liste sein
@@ -56,7 +62,7 @@ def gdwh_delete_import(base_url: str, auth: Tuple, gds_key: str,
     """
     url = f"{base_url}api/geodatasets/{gds_key}/data/imports/{datapackage_id}"
     params = {"email": email} if email else None
-    r = requests.delete(url, auth=auth, params=params, timeout=(30, 120), verify=GDWH_SSL_VERIFY)
+    r = requests.delete(url, auth=_ntlm(auth), params=params, timeout=(30, 120), verify=GDWH_SSL_VERIFY)
     r.raise_for_status()
     try:
         return r.json()
