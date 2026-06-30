@@ -11,7 +11,7 @@ GUI-Tool zum gezielten Löschen von Daten aus:
 
 ## Voraussetzungen
 
-- Python 3.8+
+- Python 3.6+
 - Paket: `requests` (tkinter ist in der Standardbibliothek enthalten)
 
 ```bash
