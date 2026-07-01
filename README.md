@@ -136,14 +136,14 @@ Nach dem Laden erscheinen alle gefilterten Items als **Baumansicht (Treeview)**,
 
 ```
 Item / Asset                              Auswahl  Area     Status     Typ    Grösse    Geändert
-▾ kry-2024-08-20t10270000  [OBERAAR  2024-08-20]      ⚪    OBERAAR              2 Assets
-      nrgb-16bit-cog.tif                              ⚪    OBERAAR   ✓ 200   .tif   345.6 MB  2026-04-27
-      thumbnail.jpg                                   ⚪              ✓ 200   .jpg    61.2 KB  2026-06-16
+▾ kry-2024-08-20t10270000  [OBERAAR  2024-08-20]      ○    OBERAAR              2 Assets
+      nrgb-16bit-cog.tif                              ○    OBERAAR   ✓ 200   .tif   345.6 MB  2026-04-27
+      thumbnail.jpg                                   ○              ✓ 200   .jpg    61.2 KB  2026-06-16
 ```
 
 - **Area** wird zuerst aus den Item-Properties, sonst aus der Asset-Description (`Area: ...`) extrahiert.
 - Der Collection-Präfix `ch.swisstopo.spezialbefliegungen_` wird im Item-Namen ausgeblendet, Aufnahmedatum/Area erscheinen im Item-Label.
-- Auswahl erfolgt per Klick auf die **Kreis-Glyphen**: ⚪ nicht ausgewählt · 🟢 ausgewählt · 🟡 (nur beim Item) teilweise ausgewählt.
+- Auswahl erfolgt per Klick auf die **Kreis-Glyphen**: ○ nicht ausgewählt · ● ausgewählt · ◐ (nur beim Item) teilweise ausgewählt.
 - **Standardmässig sind alle Assets abgewählt** — die Auswahl muss bewusst getroffen werden (anders als im read-only Monitoring-Tool).
 - Rechtsklick auf eine Zeile öffnet ein Kontextmenü (URL kopieren, im Browser öffnen, Item-ID kopieren, im STAC Browser öffnen); Doppelklick auf ein Asset öffnet dessen URL direkt im Browser.
 
@@ -151,8 +151,8 @@ Item / Asset                              Auswahl  Area     Status     Typ    Gr
 
 | Button | Funktion |
 |---|---|
-| Alle auswählen | Alle sichtbaren Assets ankreuzen (🟢) |
-| Alle abwählen | Alle abwählen (⚪) |
+| Alle auswählen | Alle sichtbaren Assets ankreuzen (●) |
+| Alle abwählen | Alle abwählen (○) |
 | **Assets prüfen (HEAD)** | HTTP-HEAD-Request je Asset → Status/Grösse/Geändert |
 | **Fehlerhafte auswählen** | Ersetzt die Auswahl durch alle Assets mit Fehler-Status |
 

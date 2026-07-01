@@ -329,9 +329,9 @@ class KryDeleteApp(tk.Tk):
     _COL_W     = {"sel": 60, "area": 90, "status": 100, "typ": 90,
                   "groesse": 90, "geaendert": 105}
 
-    _CHK_ON      = "🟢"
-    _CHK_OFF     = "⚪"
-    _CHK_PARTIAL = "🟡"
+    _CHK_ON      = "●"
+    _CHK_OFF     = "○"
+    _CHK_PARTIAL = "◐"
 
     def __init__(self):
         super().__init__()
@@ -575,7 +575,8 @@ class KryDeleteApp(tk.Tk):
         row.pack(fill="x", pady=(0, 6))
 
         self._load_btn = ttk.Button(
-            row, text="Laden", command=self._load, state="disabled")
+            row, text="Laden", command=self._load, state="disabled",
+            style="AmberBold.TButton")
         self._load_btn.pack(side="left", padx=(0, 16))
 
         ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=(0, 16))
@@ -933,6 +934,17 @@ class KryDeleteApp(tk.Tk):
             foreground=[("active", T["hint"])],
             relief=[("pressed", "flat")],
         )
+        s.configure("AmberBold.TButton",
+            background=T["btn"], foreground=T["hint"],
+            bordercolor=T["sep"], relief="flat",
+            padding=(8, 4), focuscolor=T["panel"],
+            font=("Segoe UI", 10, "bold"),
+        )
+        s.map("AmberBold.TButton",
+            background=[("active", T["btn_hover"]), ("pressed", T["sep"])],
+            foreground=[("active", T["hint"])],
+            relief=[("pressed", "flat")],
+        )
         s.configure("TRadiobutton",
             background=T["panel"], foreground=T["fg"], focuscolor=T["panel"])
         s.map("TRadiobutton",
@@ -1076,6 +1088,7 @@ class KryDeleteApp(tk.Tk):
         self._cred_status.configure(text="nicht geladen")
         self._cred_btn.configure(style="Amber.TButton")
         self._load_btn.config(state="disabled")
+        self._load_btn.configure(style="AmberBold.TButton")
         self._del_btn.config(state="disabled")
         self._apply_theme(self._dark)
 
@@ -1101,6 +1114,7 @@ class KryDeleteApp(tk.Tk):
             self._cred_status.configure(text=f"Geladen: {username}", foreground=T["ok"])
             self._cred_btn.configure(style="TButton")
             self._load_btn.config(state="normal")
+            self._load_btn.configure(style="AmberBold.TButton")
             self._log_write(f"[STAC Credentials] {env} – Benutzer: {username}\n")
         except Exception as exc:
             T = DARK if self._dark else LIGHT
@@ -1116,6 +1130,7 @@ class KryDeleteApp(tk.Tk):
                     "Kein Filter eingegeben.\nAlle Items der Collection laden?\n\n"
                     "(Kann bei 5000+ Items mehrere Minuten dauern.)"):
                 return
+        self._load_btn.configure(style="TButton")
         self._disable_search_btns()
         self._del_btn.config(state="disabled")
         self._apply_theme(self._dark)
