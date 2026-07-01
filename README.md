@@ -31,7 +31,7 @@ topo-deleteDATAfromSTAC/
 ├── 0_GUI_stac_gdwh_delete_Data.py    ← Einstiegspunkt (GUI, 2 Tabs)
 ├── stac_api.py                        ← STAC API-Funktionen (Modul)
 ├── gdwh_api.py                        ← GDWH API-Funktionen (Modul)
-├── test_functions.py                  ← pytest-Tests (72 Tests)
+├── test_functions.py                  ← pytest-Tests (116 Tests)
 ├── secrets/
 │   ├── stac_credentials.json          ← STAC-Zugangsdaten (nicht in Git!)
 │   └── proxy_config.json              ← Proxy-Konfiguration (optional)
@@ -77,8 +77,10 @@ Wird ein Item durch die Löschung **vollständig leer** (alle Assets entfernt), 
 - **INT** = Integrationsumgebung (`sys-data.int.bgdi.ch`) — zum Testen
 - **PROD** = Produktionsumgebung (`data.geo.admin.ch`) — Live-Daten
 
-`Credentials laden` liest die Zugangsdaten aus `secrets/stac_credentials.json`.  
-Erst danach werden die Suchbuttons aktiviert.
+`Credentials laden` liest die Zugangsdaten aus `secrets/stac_credentials.json` (Button ist amber, solange nicht geladen).  
+Erst danach wird der `Laden`-Button aktiviert.
+
+`STAC Browser öffnen` öffnet den swisstopo STAC-Browser für die gewählte Umgebung/Collection im Standardbrowser und kopiert den Link in die Zwischenablage.
 
 ---
 
@@ -94,12 +96,14 @@ Erst danach werden die Suchbuttons aktiviert.
 
 #### Item-ID Suche
 
-| Button | Verhalten |
-|---|---|
-| **Exakt abrufen (1 Item)** | Direkter API-Call mit vollständiger Item-ID — sofort, 1 Request |
-| **Alle suchen + filtern** | Lädt alle Items der Collection, filtert nach Teilstring — langsam bei 5000+ Items |
+Ein einziger **`Laden`**-Button (unterhalb des Dateiendungs-Filters) übernimmt beide Fälle automatisch:
+
+1. Erst wird die Eingabe als **vollständige Item-ID** direkt abgerufen (1 Request, sofort).
+2. Kein Treffer (oder Feld leer) → das Tool lädt **alle Items der Collection** und filtert nach Teilstring — langsam bei 5000+ Items, bei leerem Feld folgt eine Sicherheitsabfrage.
 
 > **Teilstring-Beispiele:** `2024-08-20`, `kry-2024`, `t10270000`
+
+Neben `Laden` stehen **`Alle aufklappen`** / **`Alle einklappen`** zur Verfügung, um die Item/Asset-Baumansicht in Schritt 3 auf- bzw. zuzuklappen.
 
 #### Asset-Key Filter
 
@@ -117,45 +121,41 @@ Filteränderungen wirken **sofort** auf die geladenen Daten — kein Neu-Abruf n
 
 ### Schritt 3 — Assets auswählen
 
-Nach dem Laden erscheinen alle gefilterten Items hierarchisch, **sortiert nach Aufnahmedatum (neueste zuerst)**:
+Nach dem Laden erscheinen alle gefilterten Items als **Baumansicht (Treeview)**, **sortiert nach Aufnahmedatum (neueste zuerst)**, mit den Spalten *Auswahl / Area / Status / Typ / Grösse / Geändert*:
 
 ```
-2024   OBERAAR
-─────────────────────────────────────────────────────────
-  ▸  kry_2024-08-20t10270000
-        ☐  nrgb-16bit    .tif
-        ☐  thumbnail     .jpg
-
-2023   GORNER
-─────────────────────────────────────────────────────────
-  ▸  kry_2023-08-15t09850000
-        ☐  nrgb-16bit    .tif
+Item / Asset                              Auswahl  Area     Status     Typ    Grösse    Geändert
+▾ kry-2024-08-20t10270000  [OBERAAR  2024-08-20]      ⚪    OBERAAR              2 Assets
+      nrgb-16bit-cog.tif                              ⚪    OBERAAR   ✓ 200   .tif   345.6 MB  2026-04-27
+      thumbnail.jpg                                   ⚪              ✓ 200   .jpg    61.2 KB  2026-06-16
 ```
 
-- **Jahr + AREA** werden aus den STAC-Metadaten (`properties.datetime`, `bbox`) abgeleitet
-- Der Collection-Präfix `ch.swisstopo.spezialbefliegungen_` wird im Item-Namen ausgeblendet
-- **Standardmässig sind alle Assets abgewählt** — die Auswahl muss bewusst getroffen werden.
+- **Area** wird zuerst aus den Item-Properties, sonst aus der Asset-Description (`Area: ...`) extrahiert.
+- Der Collection-Präfix `ch.swisstopo.spezialbefliegungen_` wird im Item-Namen ausgeblendet, Aufnahmedatum/Area erscheinen im Item-Label.
+- Auswahl erfolgt per Klick auf die **Kreis-Glyphen**: ⚪ nicht ausgewählt · 🟢 ausgewählt · 🟡 (nur beim Item) teilweise ausgewählt.
+- **Standardmässig sind alle Assets abgewählt** — die Auswahl muss bewusst getroffen werden (anders als im read-only Monitoring-Tool).
+- Rechtsklick auf eine Zeile öffnet ein Kontextmenü (URL kopieren, im Browser öffnen, Item-ID kopieren, im STAC Browser öffnen); Doppelklick auf ein Asset öffnet dessen URL direkt im Browser.
 
 #### Auswahlsteuerung
 
 | Button | Funktion |
 |---|---|
-| Alle auswählen | Alle sichtbaren Assets ankreuzen |
-| Alle abwählen | Alle abwählen |
-| **Assets prüfen (HEAD)** | HTTP-HEAD-Request je Asset → Statusanzeige |
-| **Fehlerhafte auswählen** | Alle Assets mit Fehler-Status automatisch ankreuzen |
+| Alle auswählen | Alle sichtbaren Assets ankreuzen (🟢) |
+| Alle abwählen | Alle abwählen (⚪) |
+| **Assets prüfen (HEAD)** | HTTP-HEAD-Request je Asset → Status/Grösse/Geändert |
+| **Fehlerhafte auswählen** | Ersetzt die Auswahl durch alle Assets mit Fehler-Status |
 
 #### Asset-Prüfung (HEAD-Requests)
 
-Prüft die Erreichbarkeit der Dateien direkt auf dem Server (6 parallele Requests).
+Prüft die Erreichbarkeit der Dateien direkt auf dem Server (6 parallele Requests) und liest zusätzlich Dateigrösse (`Content-Length`) und Änderungsdatum (`Last-Modified`) aus den Response-Headern.
 
-| Anzeige | Bedeutung |
+| Anzeige (Status-Spalte) | Bedeutung |
 |---|---|
 | `⟳` | Wird gerade geprüft |
-| `✓ 200` grün | Asset erreichbar und korrekt |
-| `✗ 400` rot | Korrupt / Bad Request → Kandidat zum Löschen |
-| `✗ 404` rot | Datei nicht vorhanden |
-| `✗ timeout` orange | Netzwerk-Timeout |
+| `✓  200` grün | Asset erreichbar und korrekt |
+| `✗  400` rot | Korrupt / Bad Request → Kandidat zum Löschen |
+| `✗  404` rot | Datei nicht vorhanden |
+| `✗  timeout` orange | Netzwerk-Timeout |
 
 ---
 
@@ -183,7 +183,7 @@ Das Log protokolliert jeden gelöschten Asset mit Status `[OK]` oder `[FAIL]`.
 1.  Umgebung wählen (INT zum Testen, PROD für Live-Daten)
 2.  Credentials laden
 3.  Auftragstyp wählen (KRY / RAM)
-4.  Item-ID oder Datum eingeben  →  "Alle suchen + filtern"
+4.  Item-ID oder Datum eingeben  →  [Laden]
        Beispiel: "2024-08-20"
 5.  [Assets prüfen (HEAD)]
        → fehlerhafte Assets werden rot markiert (✗ 400 / ✗ 404)
@@ -308,13 +308,13 @@ Das Log protokolliert den gestarteten Lösch-Job pro Import mit Job-ID und initi
 pytest test_functions.py -v
 ```
 
-~100 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt), inkl. der neuen Funktionen `gdwh_estimate_area`, `gdwh_import_footprint_bbox` und `gdwh_bucket_path`.
+116 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt), inkl. `gdwh_estimate_area`, `gdwh_import_footprint_bbox`, `gdwh_bucket_path` und `check_asset_info`.
 
 ---
 
 ## Hinweise
 
-- Der BVCOL-Firmenproxy (`proxy-bvcol.admin.ch:8080`) ist in `stac_api.py` und `gdwh_api.py` hinterlegt. Für abweichende Proxy-Konfigurationen: `secrets/proxy_config.json` anlegen (Vorlage: `secrets/proxy_config_template.json`).
+- Der BVCOL-Firmenproxy (`proxy-bvcol.admin.ch:8080`) ist in `stac_api.py` und `gdwh_api.py` hinterlegt. `stac_api.py` versucht ihn zuerst und schaltet nach einem `ProxyError` automatisch auf Direktverbindung um — dadurch funktioniert das Tool auch ausserhalb des Bundesnetzes (z.B. privater Rechner), sofern der STAC-Endpunkt direkt erreichbar ist. Für abweichende Proxy-Konfigurationen: `secrets/proxy_config.json` anlegen (Vorlage: `secrets/proxy_config_template.json`).
 - `logs/` enthält Tages-Logs und ist nicht im Git-Tracking.
 - STAC-Endpunkte: swisstopo Transactional API (`DELETE /collections/{id}/items/{itemId}/assets/{assetKey}`, `DELETE /collections/{id}/items/{itemId}`)
 - GDWH-Endpunkte: GDWH-API v2 (`GET /api/geodatasets/{gdsKey}/data/imports`, `DELETE /api/geodatasets/{gdsKey}/data/imports/{datapackageId}`)

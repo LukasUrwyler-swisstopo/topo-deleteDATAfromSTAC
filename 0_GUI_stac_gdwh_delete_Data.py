@@ -24,6 +24,8 @@ import threading
 import concurrent.futures
 import json
 import logging
+import webbrowser
+from email.utils import parsedate
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
@@ -31,7 +33,7 @@ from datetime import datetime
 from stac_api import (
     COLLECTION_ID, ENVIRONMENTS, AUFTRAGSTYPEN, EXT_PRESETS,
     get_item_direct, get_collection_items, filter_items,
-    delete_asset, delete_item, check_asset_status,
+    delete_asset, delete_item, check_asset_info, asset_area, browser_url,
     stac_item_year, stac_item_area, stac_item_acq_date,
 )
 from gdwh_api import (
@@ -93,6 +95,46 @@ DARK = {
     "chk_bg":    "#2d2d30",
     "chk_row":   "#303030",
 }
+
+
+# ─── Hilfsfunktionen (Formatierung Tree-Spalten) ──────────────────────────────
+
+def _fmt_size(size_bytes: Optional[int]) -> str:
+    if size_bytes is None:
+        return "–"
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 ** 2:
+        return f"{size_bytes / 1024:.1f} KB"
+    if size_bytes < 1024 ** 3:
+        return f"{size_bytes / 1024 ** 2:.1f} MB"
+    return f"{size_bytes / 1024 ** 3:.2f} GB"
+
+
+def _fmt_date(lm_str: Optional[str]) -> str:
+    """Parst HTTP Last-Modified-Header auf YYYY-MM-DD."""
+    if not lm_str:
+        return "–"
+    try:
+        t = parsedate(lm_str)
+        if t:
+            return f"{t[0]}-{t[1]:02d}-{t[2]:02d}"
+    except Exception:
+        pass
+    return lm_str[:10] if len(lm_str) >= 10 else lm_str
+
+
+def _status_label(sc: Optional[int]) -> Tuple[str, str]:
+    """Gibt (Anzeigetext, Tag-Name) für einen HTTP-Statuscode zurück."""
+    if sc is None:
+        return "–", "asset_dim"
+    if sc == 200:
+        return "✓  200", "asset_ok"
+    if sc > 0:
+        return f"✗  {sc}", "asset_err"
+    if sc == -2:
+        return "✗  timeout", "asset_warn"
+    return "✗  err", "asset_warn"
 
 
 # ─── Bestätigungs-Dialog (STAC) ───────────────────────────────────────────────
@@ -281,6 +323,16 @@ class GDWHConfirmDialog(tk.Toplevel):
 
 class KryDeleteApp(tk.Tk):
 
+    _COLS      = ("sel", "area", "status", "typ", "groesse", "geaendert")
+    _COL_HEADS = {"sel": "Auswahl", "area": "Area", "status": "Status", "typ": "Typ / Ext.",
+                  "groesse": "Grösse", "geaendert": "Geändert"}
+    _COL_W     = {"sel": 60, "area": 90, "status": 100, "typ": 90,
+                  "groesse": 90, "geaendert": 105}
+
+    _CHK_ON      = "🟢"
+    _CHK_OFF     = "⚪"
+    _CHK_PARTIAL = "🟡"
+
     def __init__(self):
         super().__init__()
         self.title("STAC / GDWH Deleting-Tool  —  ch.swisstopo.spezialbefliegungen")
@@ -294,8 +346,11 @@ class KryDeleteApp(tk.Tk):
         self._items_preview: List[Dict] = []
         self._items_asset_hrefs: Dict[str, Dict[str, str]] = {}
         self._items_assets: Dict[str, List[str]] = {}
-        self._asset_selection:     Dict[str, Dict[str, tk.BooleanVar]] = {}
-        self._asset_status_labels: Dict[str, Dict[str, tk.Label]]      = {}
+        # Baum-Metadaten: tree_iid → dict mit kind/item_id/asset_key/href/item
+        self._nodes: Dict[str, Dict] = {}
+        # Auswahl zum Löschen je Asset-Knoten (tree_iid → bool). Default = False
+        # (bewusstes Opt-in, anders als beim read-only Monitor-Tool).
+        self._checked: Dict[str, bool] = {}
 
         # GDWH State
         self._gdwh_base_url: str = GDWH_ENVIRONMENTS["INT"]
@@ -393,6 +448,7 @@ class KryDeleteApp(tk.Tk):
 
         self._build_step1(self._sf)
         self._build_step2(self._sf)
+        self._build_actions(self._sf)
         self._build_step3(self._sf)
         self._build_step4(self._sf)
 
@@ -421,7 +477,7 @@ class KryDeleteApp(tk.Tk):
         sec = ttk.LabelFrame(parent, text="1   Umgebung & Credentials",
                              padding=10, style="Section.TLabelframe")
         sec.pack(fill="x", pady=(0, 6))
-        sec.columnconfigure(4, weight=1)
+        sec.columnconfigure(5, weight=1)
 
         ttk.Label(sec, text="Umgebung:").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._env_var = tk.StringVar(value="INT")
@@ -434,14 +490,18 @@ class KryDeleteApp(tk.Tk):
                                    font=("Segoe UI", 8), style="Dim.TLabel")
         self._url_lbl.grid(row=0, column=3, sticky="w", padx=12)
 
+        ttk.Button(sec, text="STAC Browser öffnen",
+                   command=self._open_stac_browser).grid(row=0, column=4, padx=(0, 12))
+
         self._cred_btn = ttk.Button(sec, text="Credentials laden",
-                                     command=self._load_credentials)
-        self._cred_btn.grid(row=0, column=5, padx=(12, 0))
+                                     command=self._load_credentials,
+                                     style="Amber.TButton")
+        self._cred_btn.grid(row=0, column=6, padx=(12, 0))
 
         self._cred_status = ttk.Label(sec, text="nicht geladen",
                                        font=("Segoe UI", 9, "italic"),
                                        style="Dim.TLabel")
-        self._cred_status.grid(row=0, column=6, padx=8)
+        self._cred_status.grid(row=0, column=7, padx=8)
 
     def _build_step2(self, parent):
         sec = ttk.LabelFrame(parent, text="2   Auftragstyp, Item & Asset-Filter",
@@ -472,42 +532,27 @@ class KryDeleteApp(tk.Tk):
                                               padx=(0, 8), pady=(6, 0))
         self._item_id_var = tk.StringVar(value=list(AUFTRAGSTYPEN.values())[0])
         ttk.Entry(sec, textvariable=self._item_id_var, width=46).grid(
-            row=2, column=1, sticky="ew", padx=(0, 10), pady=(6, 0))
-
-        self._fetch_direct_btn = ttk.Button(
-            sec, text="Exakt abrufen (1 Item)",
-            command=self._fetch_direct, state="disabled",
-        )
-        self._fetch_direct_btn.grid(row=2, column=2, padx=(0, 4), pady=(6, 0))
-
-        self._fetch_all_btn = ttk.Button(
-            sec, text="Alle suchen + filtern",
-            command=self._fetch_all, state="disabled",
-        )
-        self._fetch_all_btn.grid(row=2, column=3, pady=(6, 0))
-
+            row=2, column=1, columnspan=2, sticky="ew", padx=(0, 10), pady=(6, 0))
         ttk.Label(
-            sec,
-            text='„Exakt" = vollständige Item-ID nötig  ·  '
-                 '„Alle suchen" = Teilstring genügt, z.B. "2024-08-20" (langsam)',
+            sec, text="Teilstring genügt  (für direkten Abruf: vollständige ID)",
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
-        ).grid(row=3, column=1, columnspan=3, sticky="w", pady=(2, 0))
+        ).grid(row=2, column=3, sticky="w", pady=(6, 0))
 
-        ttk.Label(sec, text="Asset-Key:").grid(row=4, column=0, sticky="w",
+        ttk.Label(sec, text="Asset-Key:").grid(row=3, column=0, sticky="w",
                                                 padx=(0, 8), pady=(6, 0))
         self._asset_filter_var = tk.StringVar()
         self._asset_filter_var.trace_add("write", lambda *_: self._apply_filters())
         ttk.Entry(sec, textvariable=self._asset_filter_var, width=30).grid(
-            row=4, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
+            row=3, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
         ttk.Label(
             sec, text='Teilstring, z.B. "nrgb" oder "16bit"  —  Leer = alle Assets',
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
-        ).grid(row=4, column=2, columnspan=2, sticky="w", pady=(6, 0))
+        ).grid(row=3, column=2, columnspan=2, sticky="w", pady=(6, 0))
 
-        ttk.Label(sec, text="Dateiendung:").grid(row=5, column=0, sticky="w",
+        ttk.Label(sec, text="Dateiendung:").grid(row=4, column=0, sticky="w",
                                                   padx=(0, 8), pady=(6, 0))
         ext_frame = ttk.Frame(sec)
-        ext_frame.grid(row=5, column=1, columnspan=3, sticky="w", pady=(6, 0))
+        ext_frame.grid(row=4, column=1, columnspan=3, sticky="w", pady=(6, 0))
 
         self._ext_vars: List[Tuple[tk.BooleanVar, List[str]]] = []
         for label, exts in EXT_PRESETS:
@@ -524,6 +569,24 @@ class KryDeleteApp(tk.Tk):
         ttk.Label(ext_frame, text="z.B. gpkg pdf",
                   font=("Segoe UI", 8, "italic"), style="Dim.TLabel").pack(
                       side="left", padx=(4, 0))
+
+    def _build_actions(self, parent):
+        row = ttk.Frame(parent)
+        row.pack(fill="x", pady=(0, 6))
+
+        self._load_btn = ttk.Button(
+            row, text="Laden", command=self._load, state="disabled")
+        self._load_btn.pack(side="left", padx=(0, 16))
+
+        ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=(0, 16))
+
+        self._expand_btn = ttk.Button(
+            row, text="Alle aufklappen", command=self._expand_all, state="disabled")
+        self._expand_btn.pack(side="left", padx=(0, 4))
+
+        self._collapse_btn = ttk.Button(
+            row, text="Alle einklappen", command=self._collapse_all, state="disabled")
+        self._collapse_btn.pack(side="left")
 
     def _build_step3(self, parent):
         sec = ttk.LabelFrame(parent, text="3   Assets auswählen zum Löschen",
@@ -560,29 +623,40 @@ class KryDeleteApp(tk.Tk):
         )
         self._sel_faulty_btn.pack(side="left")
 
-        chk_outer = tk.Frame(sec, bd=1, relief="sunken")
-        chk_outer.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
+        tree_outer = ttk.Frame(sec)
+        tree_outer.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
+        tree_outer.rowconfigure(0, weight=1)
+        tree_outer.columnconfigure(0, weight=1)
         sec.rowconfigure(1, weight=1)
 
-        self._chk_canvas = tk.Canvas(chk_outer, height=220, highlightthickness=0)
-        vsb = ttk.Scrollbar(chk_outer, orient="vertical", command=self._chk_canvas.yview)
-        self._chk_canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        self._chk_canvas.pack(side="left", fill="both", expand=True)
+        self._tree = ttk.Treeview(
+            tree_outer, columns=self._COLS, show="tree headings",
+            selectmode="browse", height=12)
 
-        self._chk_frame = tk.Frame(self._chk_canvas)
-        chk_win = self._chk_canvas.create_window((0, 0), window=self._chk_frame, anchor="nw")
-        self._chk_frame.bind(
-            "<Configure>",
-            lambda _: self._chk_canvas.configure(scrollregion=self._chk_canvas.bbox("all")))
-        self._chk_canvas.bind(
-            "<Configure>",
-            lambda e: self._chk_canvas.itemconfig(chk_win, width=e.width))
+        self._tree.column("#0", width=320, minwidth=200, stretch=False)
+        self._tree.heading("#0", text="Item / Asset")
+        for col in self._COLS:
+            self._tree.column(col, width=self._COL_W[col],
+                              minwidth=55, stretch=False, anchor="center")
+            self._tree.heading(col, text=self._COL_HEADS[col])
 
-        self._chk_canvas.bind("<Enter>", lambda _: self._chk_canvas.bind_all(
+        vsb = ttk.Scrollbar(tree_outer, orient="vertical",   command=self._tree.yview)
+        hsb = ttk.Scrollbar(tree_outer, orient="horizontal", command=self._tree.xview)
+        self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+
+        self._ctx = tk.Menu(self, tearoff=0)
+        self._tree.bind("<Button-3>", self._on_right_click)
+        self._tree.bind("<Double-1>", self._on_double_click)
+        self._tree.bind("<Button-1>", self._on_tree_click)
+
+        self._tree.bind("<Enter>", lambda _: self._tree.bind_all(
             "<MouseWheel>",
-            lambda e: self._chk_canvas.yview_scroll(-1 * (e.delta // 120), "units")))
-        self._chk_canvas.bind("<Leave>", lambda _: self._canvas.bind_all(
+            lambda e: self._tree.yview_scroll(-1 * (e.delta // 120), "units")))
+        self._tree.bind("<Leave>", lambda _: self._canvas.bind_all(
             "<MouseWheel>",
             lambda e: self._canvas.yview_scroll(-1 * (e.delta // 120), "units")))
 
@@ -849,6 +923,16 @@ class KryDeleteApp(tk.Tk):
             foreground=[("active", T["fg"])],
             relief=[("pressed", "flat")],
         )
+        s.configure("Amber.TButton",
+            background=T["btn"], foreground=T["hint"],
+            bordercolor=T["sep"], relief="flat",
+            padding=(8, 4), focuscolor=T["panel"],
+        )
+        s.map("Amber.TButton",
+            background=[("active", T["btn_hover"]), ("pressed", T["sep"])],
+            foreground=[("active", T["hint"])],
+            relief=[("pressed", "flat")],
+        )
         s.configure("TRadiobutton",
             background=T["panel"], foreground=T["fg"], focuscolor=T["panel"])
         s.map("TRadiobutton",
@@ -866,6 +950,21 @@ class KryDeleteApp(tk.Tk):
             background=T["btn"], troughcolor=T["root"],
             bordercolor=T["sep"], arrowcolor=T["fg"],
         )
+        s.configure("Horizontal.TScrollbar",
+            background=T["btn"], troughcolor=T["root"],
+            bordercolor=T["sep"], arrowcolor=T["fg"],
+        )
+        s.configure("Treeview",
+            background=T["list"], foreground=T["fg"],
+            fieldbackground=T["list"], rowheight=22, bordercolor=T["sep"])
+        s.configure("Treeview.Heading",
+            background=T["btn"], foreground=T["fg"],
+            relief="flat", padding=(4, 4))
+        s.map("Treeview",
+            background=[("selected", T["sel_bg"])],
+            foreground=[("selected", T["sel_fg"])])
+        s.map("Treeview.Heading",
+            background=[("active", T["btn_hover"])])
         s.configure("TSeparator", background=T["sep"])
         s.configure("TProgressbar",
             background=T["accent"], troughcolor=T["root"], bordercolor=T["sep"])
@@ -897,10 +996,12 @@ class KryDeleteApp(tk.Tk):
         self._gdwh_log.configure(bg=T["log_bg"], fg=T["log_fg"],
                                   insertbackground=T["log_fg"])
 
-        # Checkbox-Bereiche (tk-Widgets)
-        self._chk_canvas.configure(bg=T["chk_bg"])
-        self._chk_frame.configure(bg=T["chk_bg"])
-        self._recolor_chk_widgets(T)
+        # STAC Asset-Tree
+        self._tree.tag_configure("item", foreground=T["chk_item"], font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("asset_ok",   foreground=T["ok"])
+        self._tree.tag_configure("asset_err",  foreground=T["err"])
+        self._tree.tag_configure("asset_warn", foreground=T["hint"])
+        self._tree.tag_configure("asset_dim",  foreground=T["fg_dim"])
 
         self._gdwh_list_canvas.configure(bg=T["chk_bg"])
         self._gdwh_list_frame.configure(bg=T["chk_bg"])
@@ -929,28 +1030,6 @@ class KryDeleteApp(tk.Tk):
                 activeforeground="#ffffff")
 
         self._set_titlebar_dark(dark)
-
-    def _recolor_chk_widgets(self, T: dict):
-        def recolor(widget):
-            cls = widget.winfo_class()
-            if cls == "Frame":
-                widget.configure(bg=T["chk_bg"])
-            elif cls == "Label":
-                if getattr(widget, "_is_item_header", False):
-                    widget.configure(bg=T["chk_bg"], fg=T["chk_item"])
-                elif getattr(widget, "_is_status", False):
-                    ck = getattr(widget, "_status_color_key", "fg_dim")
-                    widget.configure(bg=T["chk_bg"], fg=T[ck])
-                else:
-                    widget.configure(bg=T["chk_bg"], fg=T["fg_dim"])
-            elif cls == "Checkbutton":
-                widget.configure(
-                    bg=T["chk_bg"], fg=T["fg"],
-                    selectcolor=T["input"],
-                    activebackground=T["chk_bg"], activeforeground=T["fg"])
-            for child in widget.winfo_children():
-                recolor(child)
-        recolor(self._chk_frame)
 
     def _gdwh_recolor_list(self, T: dict):
         def recolor(widget):
@@ -995,8 +1074,8 @@ class KryDeleteApp(tk.Tk):
         self._url_lbl.configure(text=ENVIRONMENTS[env])
         self._auth = None
         self._cred_status.configure(text="nicht geladen")
-        self._fetch_direct_btn.config(state="disabled")
-        self._fetch_all_btn.config(state="disabled")
+        self._cred_btn.configure(style="Amber.TButton")
+        self._load_btn.config(state="disabled")
         self._del_btn.config(state="disabled")
         self._apply_theme(self._dark)
 
@@ -1020,29 +1099,16 @@ class KryDeleteApp(tk.Tk):
             self._base_url = ENVIRONMENTS[env]
             T = DARK if self._dark else LIGHT
             self._cred_status.configure(text=f"Geladen: {username}", foreground=T["ok"])
-            self._fetch_direct_btn.config(state="normal")
-            self._fetch_all_btn.config(state="normal")
+            self._cred_btn.configure(style="TButton")
+            self._load_btn.config(state="normal")
             self._log_write(f"[STAC Credentials] {env} – Benutzer: {username}\n")
         except Exception as exc:
             T = DARK if self._dark else LIGHT
             self._cred_status.configure(text="Fehler!", foreground=T["err"])
+            self._cred_btn.configure(style="Amber.TButton")
             messagebox.showerror("Credentials-Fehler", str(exc))
 
-    def _fetch_direct(self):
-        item_id = self._item_id_var.get().strip()
-        if not item_id:
-            messagebox.showwarning("Eingabe fehlt", "Bitte eine Item-ID eingeben.")
-            return
-        self._disable_search_btns()
-        self._del_btn.config(state="disabled")
-        self._apply_theme(self._dark)
-        self._clear_chk_frame()
-        self._preview_lbl.configure(text="Abruf läuft …")
-        self._clear_state()
-        threading.Thread(target=self._fetch_direct_worker,
-                         args=(item_id,), daemon=True).start()
-
-    def _fetch_all(self):
+    def _load(self):
         search_term = self._item_id_var.get().strip()
         if not search_term:
             if not messagebox.askyesno(
@@ -1053,37 +1119,32 @@ class KryDeleteApp(tk.Tk):
         self._disable_search_btns()
         self._del_btn.config(state="disabled")
         self._apply_theme(self._dark)
-        self._clear_chk_frame()
-        self._preview_lbl.configure(text="Lade Items …")
+        self._clear_tree()
+        self._preview_lbl.configure(text="Lade …")
         self._clear_state()
-        threading.Thread(target=self._fetch_all_worker,
+        threading.Thread(target=self._load_worker,
                          args=(search_term,), daemon=True).start()
 
-    # ── STAC Worker-Threads ───────────────────────────────────────────────────
+    # ── STAC Worker-Thread ────────────────────────────────────────────────────
 
-    def _fetch_direct_worker(self, item_id: str):
+    def _load_worker(self, search_term: str):
         try:
-            self._log_write(f"[Abruf] Item direkt: {item_id} …\n")
-            item = get_item_direct(self._base_url, self._auth, item_id)
-            if item is None:
-                self._log_write(f"[Info] Nicht gefunden: {item_id}\n")
-                self.after(0, lambda: self._preview_lbl.configure(
-                    text=f"Item nicht gefunden: {item_id}"))
-                self.after(0, self._enable_search_btns)
-                return
-            hrefs = {k: v.get("href", "") for k, v in item.get("assets", {}).items()}
-            self._log_write(f"[OK] {item['id']}: {len(hrefs)} Asset(s) total\n")
-            self._items_preview     = [item]
-            self._items_asset_hrefs = {item["id"]: hrefs}
-            self.after(0, self._apply_filters)
-        except Exception as exc:
-            self._log_write(f"[FEHLER] {exc}\n")
-            self.after(0, lambda: messagebox.showerror("Fehler", str(exc)))
-            self.after(0, self._enable_search_btns)
+            if search_term:
+                self._log_write(f"[Abruf] Prüfe exakte Item-ID: {search_term} …\n")
+                item = get_item_direct(self._base_url, self._auth, search_term)
+                if item is not None:
+                    hrefs = {k: v.get("href", "") for k, v in item.get("assets", {}).items()}
+                    self._log_write(
+                        f"[OK] {item['id']}: {len(hrefs)} Asset(s) total (Direct-Lookup)\n")
+                    self._items_preview     = [item]
+                    self._items_asset_hrefs = {item["id"]: hrefs}
+                    self.after(0, self._apply_filters)
+                    return
+                self._log_write(
+                    "[Info] Keine exakte Übereinstimmung – lade gesamte Collection …\n")
+            else:
+                self._log_write("[Abruf] Hole alle Items der Collection …\n")
 
-    def _fetch_all_worker(self, search_term: str):
-        try:
-            self._log_write("[Abruf] Hole alle Items der Collection …\n")
             all_items = get_collection_items(self._base_url, self._auth, self._log_write)
             self._log_write(f"[Abruf] {len(all_items)} Items total.\n")
             filtered = filter_items(all_items, search_term)
@@ -1093,18 +1154,23 @@ class KryDeleteApp(tk.Tk):
                     text="Keine Items gefunden."))
                 self.after(0, self._enable_search_btns)
                 return
-            hrefs: Dict[str, Dict[str, str]] = {}
+
+            hrefs_map: Dict[str, Dict[str, str]] = {}
+            full_items: List[Dict] = []
             for i, item in enumerate(filtered, 1):
                 iid    = item["id"]
                 assets = item.get("assets", {})
                 if not assets:
-                    full   = get_item_direct(self._base_url, self._auth, iid)
-                    assets = full.get("assets", {}) if full else {}
-                hrefs[iid] = {k: v.get("href", "") for k, v in assets.items()}
+                    full = get_item_direct(self._base_url, self._auth, iid)
+                    if full is not None:
+                        item   = full
+                        assets = item.get("assets", {})
+                hrefs_map[iid] = {k: v.get("href", "") for k, v in assets.items()}
+                full_items.append(item)
                 self._log_write(
-                    f"  [{i}/{len(filtered)}] {iid}: {len(hrefs[iid])} Asset(s)\n")
-            self._items_preview     = filtered
-            self._items_asset_hrefs = hrefs
+                    f"  [{i}/{len(filtered)}] {iid}: {len(hrefs_map[iid])} Asset(s)\n")
+            self._items_preview     = full_items
+            self._items_asset_hrefs = hrefs_map
             self.after(0, self._apply_filters)
         except Exception as exc:
             self._log_write(f"[FEHLER] {exc}\n")
@@ -1144,202 +1210,246 @@ class KryDeleteApp(tk.Tk):
         items = self._items_preview
         if year_filter:
             items = [it for it in items if stac_item_year(it) == year_filter]
-        self._populate_checkboxes(items, assets_map)
+        self._populate_tree(items, assets_map)
 
-    # ── STAC Checkbox-Bereich ─────────────────────────────────────────────────
+    # ── STAC Asset-Tree ───────────────────────────────────────────────────────
 
-    def _clear_chk_frame(self):
-        for w in self._chk_frame.winfo_children():
-            w.destroy()
+    def _clear_tree(self):
+        self._tree.delete(*self._tree.get_children())
+        self._nodes.clear()
+        self._checked.clear()
 
-    def _populate_checkboxes(self, items: List[Dict],
-                              assets_map: Dict[str, List[str]]):
-        self._clear_chk_frame()
-        self._asset_selection.clear()
-        self._asset_status_labels.clear()
-        T = DARK if self._dark else LIGHT
+    def _is_checked(self, asset_nid: str) -> bool:
+        return self._checked.get(asset_nid, False)
+
+    def _chk_glyph(self, asset_nid: str) -> str:
+        return self._CHK_ON if self._is_checked(asset_nid) else self._CHK_OFF
+
+    def _item_asset_nids(self, item_id: str) -> List[str]:
+        return [nid for nid, d in self._nodes.items()
+                if d["kind"] == "asset" and d["item_id"] == item_id]
+
+    def _item_check_glyph(self, asset_nids: List[str]) -> str:
+        if not asset_nids:
+            return self._CHK_OFF
+        states = [self._is_checked(n) for n in asset_nids]
+        if all(states):
+            return self._CHK_ON
+        if not any(states):
+            return self._CHK_OFF
+        return self._CHK_PARTIAL
+
+    def _refresh_item_glyph(self, item_id: str):
+        item_nid = f"item::{item_id}"
+        if not self._tree.exists(item_nid):
+            return
+        vals = list(self._tree.item(item_nid, "values"))
+        vals[0] = self._item_check_glyph(self._item_asset_nids(item_id))
+        self._tree.item(item_nid, values=vals)
+
+    def _on_tree_click(self, event):
+        if self._tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self._tree.identify_column(event.x) != "#1":  # "sel"-Spalte
+            return
+        row = self._tree.identify_row(event.y)
+        d = self._nodes.get(row)
+        if not d:
+            return
+
+        if d["kind"] == "asset":
+            self._checked[row] = not self._is_checked(row)
+            vals = list(self._tree.item(row, "values"))
+            vals[0] = self._chk_glyph(row)
+            self._tree.item(row, values=vals)
+            self._refresh_item_glyph(d["item_id"])
+        else:  # item: alle zugehörigen Assets gemeinsam (de)selektieren
+            asset_nids = self._item_asset_nids(d["item_id"])
+            new_state  = self._item_check_glyph(asset_nids) != self._CHK_ON
+            for nid in asset_nids:
+                self._checked[nid] = new_state
+                vals = list(self._tree.item(nid, "values"))
+                vals[0] = self._chk_glyph(nid)
+                self._tree.item(nid, values=vals)
+            self._refresh_item_glyph(d["item_id"])
+        self._update_preview_label()
+        return "break"
+
+    def _populate_tree(self, items: List[Dict],
+                        assets_map: Dict[str, List[str]]):
+        self._clear_tree()
         any_visible = False
 
         # Nur Items mit Assets, sortiert nach Aufnahmedatum aus Item-ID (neueste zuerst)
         visible = [it for it in items if assets_map.get(it["id"])]
         visible.sort(key=stac_item_acq_date, reverse=True)
+        _pfx = COLLECTION_ID + "_"
 
         for item in visible:
             iid        = item["id"]
             asset_keys = assets_map.get(iid, [])
             any_visible = True
-            self._asset_selection[iid]     = {}
-            self._asset_status_labels[iid] = {}
 
-            year = stac_item_year(item)
             area = stac_item_area(item)
+            acq  = stac_item_acq_date(item)
+            display = iid[len(_pfx):] if iid.startswith(_pfx) else iid
+            meta  = "  ".join(p for p in [area, acq] if p)
+            label = display + (f"   [{meta}]" if meta else "")
 
-            # ── Zeile 1: Jahr  AREA ───────────────────────────────────────────
-            hdr1 = tk.Frame(self._chk_frame, bg=T["chk_bg"])
-            hdr1.pack(fill="x", padx=6, pady=(10, 0))
+            asset_node_ids = [f"asset::{iid}::{ak}" for ak in asset_keys]
+            node_id = f"item::{iid}"
+            self._tree.insert("", "end", iid=node_id, text=f"  {label}",
+                              values=(self._item_check_glyph(asset_node_ids), area,
+                                      "", "", f"{len(asset_keys)} Assets", ""),
+                              tags=("item",), open=True)
+            self._nodes[node_id] = {"kind": "item", "item_id": iid, "item": item}
 
-            tk.Label(
-                hdr1, text=year if year else "????",
-                font=("Cascadia Mono", 9, "bold"),
-                bg=T["chk_bg"], fg=T["fg"], anchor="w", width=5,
-            ).pack(side="left")
-            tk.Label(
-                hdr1, text=area if area else "–",
-                font=("Cascadia Mono", 9, "bold"),
-                bg=T["chk_bg"], fg=T["accent"] if area else T["fg_dim"], anchor="w",
-            ).pack(side="left")
-
-            tk.Frame(self._chk_frame, bg=T["sep"], height=1).pack(
-                fill="x", padx=6, pady=(2, 0))
-
-            # ── Zeile 2 (eingerückt): Item-ID (Collection-Präfix ausblenden) ──
-            _pfx = COLLECTION_ID + "_"
-            iid_display = iid[len(_pfx):] if iid.startswith(_pfx) else iid
-            hdr2 = tk.Label(
-                self._chk_frame, text=f"  ▸  {iid_display}",
-                font=("Segoe UI", 8, "bold"),
-                bg=T["chk_bg"], fg=T["chk_item"], anchor="w", padx=10,
-            )
-            hdr2._is_item_header = True
-            hdr2.pack(fill="x", pady=(2, 2))
-
-            # ── Zeile 3+: Assets als Checkboxen ──────────────────────────────
+            assets_dict = item.get("assets", {})
             for ak in asset_keys:
+                aval   = assets_dict.get(ak, {})
                 href   = self._items_asset_hrefs.get(iid, {}).get(ak, "")
-                suffix = Path(href).suffix if href else ""
-                var    = tk.BooleanVar(value=False)
-                var.trace_add("write", lambda *_: self._on_checkbox_change())
-                self._asset_selection[iid][ak] = var
+                a_area = asset_area(aval) or area
+                ext    = Path(href).suffix if href else ""
+                atype  = aval.get("type", "")
 
-                row = tk.Frame(self._chk_frame, bg=T["chk_bg"])
-                row.pack(fill="x", padx=24, pady=1)
-                tk.Checkbutton(
-                    row, variable=var,
-                    bg=T["chk_bg"], fg=T["fg"], selectcolor=T["input"],
-                    activebackground=T["chk_bg"], activeforeground=T["fg"],
-                ).pack(side="left")
-                tk.Label(row, text=ak, font=("Cascadia Mono", 9),
-                         bg=T["chk_bg"], fg=T["fg"], anchor="w").pack(side="left")
-                if suffix:
-                    tk.Label(row, text=f"  {suffix}", font=("Cascadia Mono", 9),
-                             bg=T["chk_bg"], fg=T["fg_dim"], anchor="w").pack(side="left")
-
-                status_lbl = tk.Label(row, text="", font=("Cascadia Mono", 9),
-                                      bg=T["chk_bg"], fg=T["fg_dim"],
-                                      anchor="w", width=8)
-                status_lbl._is_status        = True
-                status_lbl._status_color_key = "fg_dim"
-                status_lbl.pack(side="left", padx=(10, 0))
-                self._asset_status_labels[iid][ak] = status_lbl
+                anid = f"asset::{iid}::{ak}"
+                self._tree.insert(node_id, "end", iid=anid, text=f"        {ak}",
+                                  values=(self._chk_glyph(anid), a_area, "",
+                                          ext or atype[:22], "", ""),
+                                  tags=("asset_dim",))
+                self._nodes[anid] = {
+                    "kind": "asset", "item_id": iid, "asset_key": ak,
+                    "href": href, "item": item,
+                }
 
         if not any_visible:
-            tk.Label(
-                self._chk_frame,
-                text="Keine Assets nach aktuellem Filter.",
-                font=("Segoe UI", 9, "italic"),
-                bg=T["chk_bg"], fg=T["fg_dim"], padx=8, pady=8,
-            ).pack(anchor="w")
+            self._preview_lbl.configure(text="Keine Assets nach aktuellem Filter.")
 
         self._enable_search_btns()
         st = "normal" if any_visible else "disabled"
         self._sel_all_btn.config(state=st)
         self._sel_none_btn.config(state=st)
         self._check_btn.config(state=st)
+        self._expand_btn.config(state=st)
+        self._collapse_btn.config(state=st)
         self._sel_faulty_btn.config(state="disabled")
         self._update_preview_label()
         self._apply_theme(self._dark)
 
-    def _on_checkbox_change(self):
-        self._update_preview_label()
+    def _expand_all(self):
+        for node in self._tree.get_children():
+            self._tree.item(node, open=True)
+
+    def _collapse_all(self):
+        for node in self._tree.get_children():
+            self._tree.item(node, open=False)
 
     # ── STAC Asset-Prüfung ────────────────────────────────────────────────────
 
     def _check_assets(self):
-        if not self._asset_status_labels:
+        tasks = [
+            (nid, d["item_id"], d["asset_key"], d["href"])
+            for nid, d in self._nodes.items()
+            if d["kind"] == "asset" and d.get("href")
+        ]
+        if not tasks:
+            self._log_write("[Prüfung] Keine Assets zum Prüfen.\n")
             return
         self._check_btn.config(state="disabled")
         self._sel_faulty_btn.config(state="disabled")
-        self._log_write("[Prüfung] Starte HEAD-Requests …\n")
-        tasks = [
-            (iid, ak, self._items_asset_hrefs.get(iid, {}).get(ak, ""))
-            for iid, keys in self._asset_status_labels.items()
-            for ak in keys
-        ]
-        T = DARK if self._dark else LIGHT
-        for iid, ak, _ in tasks:
-            lbl = self._asset_status_labels[iid][ak]
-            lbl._status_color_key = "fg_dim"
-            lbl.configure(text="  ⟳", fg=T["fg_dim"])
+        self._log_write(f"[Prüfung] Starte HEAD-Requests für {len(tasks)} Assets …\n")
+        for nid, _, _, _ in tasks:
+            if self._tree.exists(nid):
+                cur = list(self._tree.item(nid, "values"))
+                cur[2] = "⟳"
+                self._tree.item(nid, values=cur, tags=("asset_dim",))
         threading.Thread(target=self._check_worker, args=(tasks,), daemon=True).start()
 
-    def _check_worker(self, tasks: List[Tuple[str, str, str]]):
-        T      = DARK if self._dark else LIGHT
+    def _check_worker(self, tasks: List[Tuple[str, str, str, str]]):
         errors = 0
-
-        def _update(lbl, text, color_key):
-            lbl._status_color_key = color_key
-            lbl.configure(text=text, fg=T[color_key])
-
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
             future_map = {
-                pool.submit(check_asset_status, href, self._auth): (iid, ak)
-                for iid, ak, href in tasks
+                pool.submit(check_asset_info, href, self._auth): (nid, iid, ak)
+                for nid, iid, ak, href in tasks
             }
             for future in concurrent.futures.as_completed(future_map):
-                iid, ak = future_map[future]
-                lbl = self._asset_status_labels.get(iid, {}).get(ak)
-                if lbl is None:
-                    continue
+                nid, iid, ak = future_map[future]
                 try:
-                    code = future.result()
+                    info = future.result()
                 except Exception:
-                    code = -3
-                if code == 200:
-                    text, ck = "✓ 200", "ok"
-                elif code > 0:
-                    text, ck = f"✗ {code}", "err"
+                    info = {"status": -3, "size_bytes": None, "last_modified": None}
+
+                sc       = info.get("status")
+                sz       = info.get("size_bytes")
+                lm       = info.get("last_modified")
+                stxt, tg = _status_label(sc)
+                if sc is None or sc != 200:
                     errors += 1
-                elif code == -2:
-                    text, ck = "✗ timeout", "hint"
-                    errors += 1
-                else:
-                    text, ck = "✗ err", "hint"
-                    errors += 1
-                self.after(0, lambda l=lbl, t=text, c=ck: _update(l, t, c))
-                self._log_write(f"  {iid}/{ak}  →  {text}\n")
+
+                self.after(0, lambda n=nid, s=stxt, t=tg,
+                           sz_=_fmt_size(sz), lm_=_fmt_date(lm):
+                           self._update_tree_row(n, s, t, sz_, lm_))
+                self._log_write(f"  {iid}/{ak}  →  {stxt}  {_fmt_size(sz)}\n")
 
         self._log_write(f"[Prüfung] {len(tasks)} Assets geprüft — {errors} fehlerhaft.\n")
         self.after(0, lambda: self._check_btn.config(state="normal"))
         if errors > 0:
             self.after(0, lambda: self._sel_faulty_btn.config(state="normal"))
 
+    def _update_tree_row(self, nid: str, status_text: str, tag: str,
+                          size_text: str, date_text: str):
+        if not self._tree.exists(nid):
+            return
+        cur = list(self._tree.item(nid, "values"))
+        cur[2], cur[4], cur[5] = status_text, size_text, date_text
+        self._tree.item(nid, values=cur, tags=(tag,))
+
     def _select_faulty_assets(self):
         count = 0
-        for iid, ak_labels in self._asset_status_labels.items():
-            for ak, lbl in ak_labels.items():
-                is_error = getattr(lbl, "_status_color_key", "fg_dim") in ("err", "hint")
-                var = self._asset_selection.get(iid, {}).get(ak)
-                if var is not None:
-                    var.set(is_error)
-                    if is_error:
-                        count += 1
+        for nid, d in self._nodes.items():
+            if d["kind"] != "asset":
+                continue
+            tags     = self._tree.item(nid, "tags") if self._tree.exists(nid) else ()
+            tag      = tags[0] if tags else "asset_dim"
+            is_error = tag in ("asset_err", "asset_warn")
+            self._checked[nid] = is_error
+            if is_error:
+                count += 1
+            if self._tree.exists(nid):
+                vals = list(self._tree.item(nid, "values"))
+                vals[0] = self._chk_glyph(nid)
+                self._tree.item(nid, values=vals)
+        for nid, d in self._nodes.items():
+            if d["kind"] == "item":
+                self._refresh_item_glyph(d["item_id"])
         self._log_write(f"[Auswahl] {count} fehlerhafte Assets ausgewählt.\n")
+        self._update_preview_label()
 
     def _select_all_assets(self):
-        for assets in self._asset_selection.values():
-            for var in assets.values():
-                var.set(True)
+        self._set_all_checked(True)
 
     def _deselect_all_assets(self):
-        for assets in self._asset_selection.values():
-            for var in assets.values():
-                var.set(False)
+        self._set_all_checked(False)
+
+    def _set_all_checked(self, state: bool):
+        for nid, d in self._nodes.items():
+            if d["kind"] != "asset":
+                continue
+            self._checked[nid] = state
+            if self._tree.exists(nid):
+                vals = list(self._tree.item(nid, "values"))
+                vals[0] = self._chk_glyph(nid)
+                self._tree.item(nid, values=vals)
+        for nid, d in self._nodes.items():
+            if d["kind"] == "item":
+                self._refresh_item_glyph(d["item_id"])
+        self._update_preview_label()
 
     def _update_preview_label(self):
-        total    = sum(len(v) for v in self._asset_selection.values())
-        selected = sum(v.get() for assets in self._asset_selection.values()
-                       for v in assets.values())
-        n_total  = sum(len(v) for v in self._items_asset_hrefs.values())
+        asset_nids = [nid for nid, d in self._nodes.items() if d["kind"] == "asset"]
+        total      = len(asset_nids)
+        selected   = sum(1 for nid in asset_nids if self._is_checked(nid))
+        n_total    = sum(len(v) for v in self._items_asset_hrefs.values())
         self._preview_lbl.configure(
             text=f"{len(self._items_preview)} Item(s)  |  "
                  f"{n_total} Assets total  →  {total} nach Filter  |  "
@@ -1351,14 +1461,64 @@ class KryDeleteApp(tk.Tk):
         )
         self._apply_theme(self._dark)
 
+    # ── STAC Kontextmenü / Doppelklick ────────────────────────────────────────
+
+    def _open_stac_browser(self, item_id: Optional[str] = None):
+        url = browser_url(self._env_var.get(), item_id)
+        webbrowser.open(url)
+        self.clipboard_clear()
+        self.clipboard_append(url)
+        self._log_write(f"[STAC Browser] geöffnet & kopiert: {url}\n")
+
+    def _on_right_click(self, event):
+        row = self._tree.identify_row(event.y)
+        if not row:
+            return
+        self._tree.selection_set(row)
+        d = self._nodes.get(row, {})
+        self._ctx.delete(0, "end")
+
+        if d.get("kind") == "asset":
+            href = d.get("href", "")
+            if href:
+                self._ctx.add_command(
+                    label="URL kopieren", command=lambda h=href: self._clip(h))
+                self._ctx.add_command(
+                    label="Im Browser öffnen", command=lambda h=href: webbrowser.open(h))
+                self._ctx.add_separator()
+
+        iid = d.get("item_id")
+        if iid:
+            self._ctx.add_command(
+                label="Item-ID kopieren", command=lambda i=iid: self._clip(i))
+            self._ctx.add_command(
+                label="Im STAC Browser öffnen",
+                command=lambda i=iid: self._open_stac_browser(i))
+
+        self._ctx.tk_popup(event.x_root, event.y_root)
+
+    def _on_double_click(self, event):
+        row = self._tree.identify_row(event.y)
+        if not row:
+            return
+        d = self._nodes.get(row, {})
+        if d.get("kind") == "asset":
+            href = d.get("href", "")
+            if href:
+                webbrowser.open(href)
+
+    def _clip(self, text: str):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._log_write(f"[Clipboard] {text}\n")
+
     # ── STAC Löschung ─────────────────────────────────────────────────────────
 
     def _start_deletion(self):
-        selected_items = {
-            iid: [ak for ak, var in assets.items() if var.get()]
-            for iid, assets in self._asset_selection.items()
-            if any(v.get() for v in assets.values())
-        }
+        selected_items: Dict[str, List[str]] = {}
+        for nid, d in self._nodes.items():
+            if d["kind"] == "asset" and self._is_checked(nid):
+                selected_items.setdefault(d["item_id"], []).append(d["asset_key"])
         if not selected_items:
             messagebox.showwarning("Nichts ausgewählt", "Keine Assets ausgewählt.")
             return
@@ -1872,19 +2032,17 @@ class KryDeleteApp(tk.Tk):
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _clear_state(self):
-        self._items_preview       = []
-        self._items_asset_hrefs   = {}
-        self._items_assets        = {}
-        self._asset_selection     = {}
-        self._asset_status_labels = {}
+        self._items_preview     = []
+        self._items_asset_hrefs = {}
+        self._items_assets      = {}
+        self._nodes             = {}
+        self._checked           = {}
 
     def _disable_search_btns(self):
-        self._fetch_direct_btn.config(state="disabled")
-        self._fetch_all_btn.config(state="disabled")
+        self._load_btn.config(state="disabled")
 
     def _enable_search_btns(self):
-        self._fetch_direct_btn.config(state="normal")
-        self._fetch_all_btn.config(state="normal")
+        self._load_btn.config(state="normal")
 
     def _log_write(self, text: str):
         def _do():

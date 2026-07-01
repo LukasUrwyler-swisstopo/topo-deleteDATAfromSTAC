@@ -18,7 +18,7 @@ from stac_api import (
     filter_items,
     get_item_direct, get_collection_items,
     delete_asset, delete_item,
-    check_asset_status,
+    check_asset_info,
     stac_item_year, stac_item_area,
 )
 from gdwh_api import (
@@ -120,30 +120,35 @@ class TestFilterItems:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# check_asset_status
+# check_asset_info
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestCheckAssetStatus:
+class TestCheckAssetInfo:
 
     URL = "https://example.com/file.tif"
 
+    def _resp(self, status=200, headers=None):
+        r = _mock_response(status)
+        r.headers = headers or {}
+        return r
+
     def test_leere_url_gibt_minus_1(self):
-        assert check_asset_status("", AUTH) == -1
+        assert check_asset_info("", AUTH)["status"] == -1
 
     def test_200_ok(self):
-        with patch("stac_api.requests.head", return_value=_mock_response(200)):
-            assert check_asset_status(self.URL, AUTH) == 200
+        with patch("stac_api.requests.head", return_value=self._resp(200)):
+            assert check_asset_info(self.URL, AUTH)["status"] == 200
 
     def test_404_nicht_gefunden(self):
-        with patch("stac_api.requests.head", return_value=_mock_response(404)):
-            assert check_asset_status(self.URL, AUTH) == 404
+        with patch("stac_api.requests.head", return_value=self._resp(404)):
+            assert check_asset_info(self.URL, AUTH)["status"] == 404
 
     def test_403_wird_mit_auth_wiederholt(self):
         """Bei 403 soll ein zweiter HEAD-Request mit Auth gesendet werden."""
         with patch("stac_api.requests.head",
-                   side_effect=[_mock_response(403), _mock_response(200)]) as mock_head:
-            result = check_asset_status(self.URL, AUTH)
-        assert result == 200
+                   side_effect=[self._resp(403), self._resp(200)]) as mock_head:
+            result = check_asset_info(self.URL, AUTH)
+        assert result["status"] == 200
         assert mock_head.call_count == 2
         _, kwargs = mock_head.call_args
         assert kwargs.get("auth") == AUTH
@@ -151,12 +156,19 @@ class TestCheckAssetStatus:
     def test_timeout_gibt_minus_2(self):
         with patch("stac_api.requests.head",
                    side_effect=req_module.exceptions.Timeout):
-            assert check_asset_status(self.URL, AUTH) == -2
+            assert check_asset_info(self.URL, AUTH)["status"] == -2
 
     def test_netzwerkfehler_gibt_minus_3(self):
         with patch("stac_api.requests.head",
                    side_effect=ConnectionError("no route")):
-            assert check_asset_status(self.URL, AUTH) == -3
+            assert check_asset_info(self.URL, AUTH)["status"] == -3
+
+    def test_groesse_und_datum_werden_gelesen(self):
+        headers = {"Content-Length": "12345", "Last-Modified": "Wed, 20 Aug 2024 10:00:00 GMT"}
+        with patch("stac_api.requests.head", return_value=self._resp(200, headers)):
+            result = check_asset_info(self.URL, AUTH)
+        assert result["size_bytes"] == 12345
+        assert result["last_modified"] == headers["Last-Modified"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

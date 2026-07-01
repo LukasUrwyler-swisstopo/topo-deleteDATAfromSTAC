@@ -24,6 +24,22 @@ ENVIRONMENTS = {
     "PROD": "https://data.geo.admin.ch/api/stac/v0.9/",
 }
 
+# Hash-Routing-Basis des STAC-Browsers je Umgebung (für Kunden-Weitergabe).
+# INT läuft direkt auf der Domain-Root, PROD unter /browser/index.html.
+_BROWSER_BASE = {
+    "INT":  "https://sys-data.int.bgdi.ch/#/collections/{cid}",
+    "PROD": "https://data.geo.admin.ch/browser/index.html#/collections/{cid}",
+}
+
+
+def browser_url(env: str, item_id: Optional[str] = None) -> str:
+    """Liefert den STAC-Browser-Link zur Collection, optional zu einem Item."""
+    url = _BROWSER_BASE[env].format(cid=COLLECTION_ID)
+    if item_id:
+        url += f"/items/{item_id}"
+    return url + "?.language=en"
+
+
 AUFTRAGSTYPEN: Dict[str, str] = {
     "KRY (Kryosphäre)":   "kry",
     "RAM (Rapidmapping)": "ram",
@@ -41,14 +57,33 @@ EXT_PRESETS: List[Tuple[str, List[str]]] = [
 
 # ─── Interne Session-Funktionen ───────────────────────────────────────────────
 
+# None = noch nicht getestet, True/False = Ergebnis des ersten Verbindungsversuchs.
+# Ausserhalb des Bundesnetz (z.B. privater Rechner) ist proxy-bvcol.admin.ch nicht
+# auflösbar -> nach einmaligem ProxyError auf Direktverbindung umschalten.
+_USE_PROXY: Optional[bool] = None
+
+
+def _request(method, url: str, **kwargs) -> requests.Response:
+    global _USE_PROXY
+    if _USE_PROXY is False:
+        return method(url, proxies=None, **kwargs)
+    try:
+        r = method(url, proxies=_PROXY, **kwargs)
+        _USE_PROXY = True
+        return r
+    except requests.exceptions.ProxyError:
+        _USE_PROXY = False
+        return method(url, proxies=None, **kwargs)
+
+
 def _session_get(url: str, auth: Tuple, params: dict = None) -> requests.Response:
-    return requests.get(url, auth=auth, params=params,
-                        proxies=_PROXY, verify=False, timeout=(30, 60))
+    return _request(requests.get, url, auth=auth, params=params,
+                    verify=False, timeout=(30, 60))
 
 
 def _session_delete(url: str, auth: Tuple) -> requests.Response:
-    return requests.delete(url, auth=auth,
-                           proxies=_PROXY, verify=False, timeout=(30, 60))
+    return _request(requests.delete, url, auth=auth,
+                    verify=False, timeout=(30, 60))
 
 
 # ─── Öffentliche API-Funktionen ───────────────────────────────────────────────
@@ -107,21 +142,31 @@ def delete_item(base_url: str, auth: Tuple, item_id: str) -> Tuple[bool, int]:
     return r.status_code in (200, 204), r.status_code
 
 
-def check_asset_status(href: str, auth: Tuple) -> int:
-    """HEAD-Request auf Asset-URL. Gibt HTTP-Statuscode zurück, negativ bei Fehler."""
+def check_asset_info(href: str, auth: Tuple) -> Dict:
+    """HEAD-Request auf Asset-URL.
+    Gibt dict mit status, size_bytes und last_modified zurück.
+    status: HTTP-Code oder negativ (-1=kein href, -2=timeout, -3=exception)."""
+    result: Dict = {"status": -1, "size_bytes": None, "last_modified": None}
     if not href:
-        return -1
+        return result
     try:
-        r = requests.head(href, proxies=_PROXY, verify=False,
-                          timeout=(5, 15), allow_redirects=True)
+        r = _request(requests.head, href, verify=False,
+                    timeout=(5, 15), allow_redirects=True)
         if r.status_code in (401, 403):
-            r = requests.head(href, auth=auth, proxies=_PROXY, verify=False,
-                              timeout=(5, 15), allow_redirects=True)
-        return r.status_code
+            r = _request(requests.head, href, auth=auth, verify=False,
+                        timeout=(5, 15), allow_redirects=True)
+        result["status"] = r.status_code
+        cl = r.headers.get("Content-Length", "")
+        if cl.isdigit():
+            result["size_bytes"] = int(cl)
+        lm = r.headers.get("Last-Modified")
+        if lm:
+            result["last_modified"] = lm
     except requests.exceptions.Timeout:
-        return -2
+        result["status"] = -2
     except Exception:
-        return -3
+        result["status"] = -3
+    return result
 
 
 def stac_item_acq_date(item: Dict) -> str:
@@ -144,13 +189,47 @@ def stac_item_year(item: Dict) -> str:
 
 
 def stac_item_area(item: Dict) -> str:
-    """Gibt den AOI-Namen zurück, nur wenn er explizit in den Item-Properties steht."""
+    """Gibt den AOI-Namen zurück: zuerst aus Item-Properties (falls vorhanden),
+    sonst aus der Description des ersten passenden Assets."""
     props = item.get("properties", {})
     for key in ("area", "aoi", "area_name", "region"):
         val = str(props.get(key, "")).strip()
         if val:
             return val.upper()
+    for asset in item.get("assets", {}).values():
+        area = asset_area(asset)
+        if area:
+            return area.upper()
     return ""
+
+
+# Bekannte Schlüssel im "Key: Value, Key: Value, ..."-Format der Asset-Description
+# (z.B. "Area: RANDA, TerrainModel: ..., Acquisition time: t1,t2,t3, LineId: ...").
+# Einzelne Werte (Acquisition time, LineId) enthalten selbst Kommas – ein Split
+# ausschliesslich anhand dieser bekannten Schlüssel verhindert falsches Zerteilen.
+_ASSET_DESC_KEYS = [
+    "Area", "TerrainModel", "SourceReferenceSystem", "CameraSystem",
+    "Acquisition time", "LineId", "Commentary",
+]
+
+
+def parse_asset_description(description: str) -> Dict[str, str]:
+    """Zerlegt die Asset-Description in ein Dict der bekannten Schlüssel."""
+    if not description:
+        return {}
+    pattern = r"(" + "|".join(re.escape(k) for k in _ASSET_DESC_KEYS) + r"):\s*"
+    matches = list(re.finditer(pattern, description))
+    result: Dict[str, str] = {}
+    for i, m in enumerate(matches):
+        start = m.end()
+        end   = matches[i + 1].start() if i + 1 < len(matches) else len(description)
+        result[m.group(1)] = description[start:end].rstrip(", ").strip()
+    return result
+
+
+def asset_area(asset: Dict) -> str:
+    """Extrahiert den 'Area'-Wert aus der Asset-Description, falls vorhanden."""
+    return parse_asset_description(asset.get("description", "")).get("Area", "")
 
 
 if __name__ == "__main__":
