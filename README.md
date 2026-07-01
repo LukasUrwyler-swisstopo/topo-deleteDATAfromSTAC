@@ -2,10 +2,10 @@
 
 GUI-Tool zum gezielten Löschen von Daten aus:
 
-- **Tab 1 — STAC [INT/PROD]**:/n
-Assets (und bei Bedarf leere Items) aus der Collection `ch.swisstopo.spezialbefliegungen`
-- **Tab 2 — GDWH [INT/PROD]**:/n
-DataPackage-Imports aus dem Geodata-Warehouse (`ltgdwhi` / `ltgdwh`)
+- **Tab 1 — STAC [INT/PROD]**:<br>
+  Assets (und bei Bedarf leere Items) aus der Collection `ch.swisstopo.spezialbefliegungen`
+- **Tab 2 — GDWH [INT/PROD]**:<br>
+  DataPackage-Imports aus dem Geodata-Warehouse (`ltgdwhi` / `ltgdwh`)
 
 ## GUI
 
