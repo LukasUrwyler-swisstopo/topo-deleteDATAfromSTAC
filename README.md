@@ -9,6 +9,10 @@ GUI-Tool zum gezielten Löschen von Daten aus:
 
 ## GUI
 
+```bash
+python 0_GUI_stac_gdwh_delete_Data.py
+```
+
 <img width="958" height="1027" alt="grafik" src="https://github.com/user-attachments/assets/618f4c2e-ab3b-4285-a292-49123efd2ca8" />
 
 
